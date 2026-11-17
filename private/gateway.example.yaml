@@ -1,0 +1,152 @@
+# Minimal CLIProxyAPI 8.0.66 configuration template (single production route)
+# Copy to private/gateway.yaml and replace placeholders before starting.
+# Single route:
+#   Claude Desktop (Microsoft Store, 3p) -> CC Switch (127.0.0.1:15721)
+#   -> CLIProxyAPI 8.0.66 (127.0.0.1:18432) -> Local HTTP Proxy (http://127.0.0.1:7897)
+#   -> Google Cloud Vertex AI (locations/global)
+
+config-version: 8
+disable-cooling: true
+transient-error-cooldown-seconds: -1
+
+server:
+  host: "127.0.0.1"
+  port: 18432
+  max-request-body-bytes: 0
+  commercial-mode: true
+  discovery:
+    enabled: false
+
+management:
+  allow-remote: false
+  secret-key: ""
+  disable-control-panel: true
+  disable-auto-update-panel: true
+
+access:
+  api-keys:
+    - "CHANGE_ME_LOCAL_GATEWAY_KEY"
+
+routing:
+  force-model-prefix: true
+  strategy: "fill-first"
+  transient-error-cooldown-seconds: -1
+  retry:
+    request-retry: 0
+    max-retry-credentials: 1
+    max-retry-interval: 0
+
+requests:
+  proxy-url: "http://127.0.0.1:7897"
+  nonstream-keepalive-interval: 0
+  streaming:
+    bootstrap-retries: 0
+    keepalive-seconds: 5
+    send-keepalive-before-ft: true
+  payload:
+    default:
+      - models:
+          - name: "gemini-4-argon"
+            protocol: "gemini"
+          - name: "gemini-4-carbon"
+            protocol: "gemini"
+          - name: "gemini-4-hydrogen"
+            protocol: "gemini"
+        params:
+          "generationConfig.thinkingConfig.thinkingLevel": "HIGH"
+          "generationConfig.thinkingConfig.includeThoughts": true
+    override:
+      - models:
+          - name: "gemini-4-argon"
+            protocol: "gemini"
+          - name: "gemini-4-carbon"
+            protocol: "gemini"
+          - name: "gemini-4-hydrogen"
+            protocol: "gemini"
+        params:
+          # Must match guard-config.json maxOutputTokens (validated by start-gateways.ps1)
+          "generationConfig.maxOutputTokens": 32768
+      # Optional header-based thinking-level overrides (defaults to HIGH above when header is absent)
+      - models:
+          - name: "gemini-4-argon"
+            protocol: "gemini"
+            headers:
+              X-Protected-Thinking-Level: "low"
+          - name: "gemini-4-carbon"
+            protocol: "gemini"
+            headers:
+              X-Protected-Thinking-Level: "low"
+          - name: "gemini-4-hydrogen"
+            protocol: "gemini"
+            headers:
+              X-Protected-Thinking-Level: "low"
+        params:
+          "generationConfig.thinkingConfig.thinkingLevel": "LOW"
+      - models:
+          - name: "gemini-4-argon"
+            protocol: "gemini"
+            headers:
+              X-Protected-Thinking-Level: "medium"
+          - name: "gemini-4-carbon"
+            protocol: "gemini"
+            headers:
+              X-Protected-Thinking-Level: "medium"
+          - name: "gemini-4-hydrogen"
+            protocol: "gemini"
+            headers:
+              X-Protected-Thinking-Level: "medium"
+        params:
+          "generationConfig.thinkingConfig.thinkingLevel": "MEDIUM"
+      - models:
+          - name: "gemini-4-argon"
+            protocol: "gemini"
+            headers:
+              X-Protected-Thinking-Level: "high"
+          - name: "gemini-4-carbon"
+            protocol: "gemini"
+            headers:
+              X-Protected-Thinking-Level: "high"
+          - name: "gemini-4-hydrogen"
+            protocol: "gemini"
+            headers:
+              X-Protected-Thinking-Level: "high"
+        params:
+          "generationConfig.thinkingConfig.thinkingLevel": "HIGH"
+      - models:
+          - name: "gemini-4-hydrogen"
+            protocol: "gemini"
+            headers:
+              X-Protected-Thinking-Level: "xhigh"
+        params:
+          "generationConfig.thinkingConfig.thinkingLevel": "XHIGH"
+    filter:
+      - models:
+          - name: "gemini-4-argon"
+            protocol: "gemini"
+          - name: "gemini-4-carbon"
+            protocol: "gemini"
+          - name: "gemini-4-hydrogen"
+            protocol: "gemini"
+        params:
+          - "generationConfig.thinkingConfig.thinkingBudget"
+          - "safetySettings"
+
+# Override embedded static catalog so CLIProxyAPI 8.0.66 registers gemini-4-hydrogen under -local-model
+models:
+  catalog: "./gateway-8.0.66/models-catalog.json"
+
+# Place real Vertex auth files in ./private/auths/ (see examples/auths/*.example.json; do NOT store .example.json inside ./private/auths/)
+oauth:
+  auth-dir: "./private/auths"
+  auth-auto-refresh-workers: 1
+
+observability:
+  logs:
+    debug: false
+    logging-to-file: false
+    request-log: false
+  usage:
+    usage-statistics-enabled: false
+
+multimedia:
+  disable-image-generation: true

@@ -1,0 +1,20 @@
+{
+  "projectId": "YOUR_GCP_PROJECT_ID",
+  "model": "gemini-4-argon",
+  "host": "127.0.0.1",
+  "backendUrl": "http://127.0.0.1:18432",
+  "maxInputTokens": 750000,
+  "maxOutputTokens": 32768,
+  "secretsPath": "private/keys.json",
+  "allowedModels": [
+    "gemini-4-argon",
+    "gemini-4-carbon",
+    "gemini-4-hydrogen"
+  ],
+  "backendModels": {
+    "gemini-4-argon": "gemini-4-argon",
+    "gemini-4-carbon": "carbon-us/gemini-4-carbon",
+    "gemini-4-hydrogen": "gemini-4-hydrogen"
+  },
+  "maxRequestBodyBytes": 67108864
+}

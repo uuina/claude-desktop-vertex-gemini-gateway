@@ -1,0 +1,64 @@
+# Secrets, credentials, and local runtime configuration
+!private/
+private/*
+!private/keys.example.json
+!private/gateway.example.yaml
+private/auths/
+state/
+claude-profile/
+guard-config.json
+.agents/
+
+# Logs, PIDs, and local databases
+logs/
+*.log
+*.pid
+*.db
+*.sqlite
+*.sqlite3
+
+# Local work logs, historical snapshots, screenshots, and upstream downloads
+WORK_STATE.md
+VERTEX_GEMINI_500_502_HANDOFF_20261112.md
+!docs/
+docs/*
+!docs/SETUP.md
+evidence/
+downloads/
+
+# Large binaries and archives
+*.exe
+*.zip
+
+# Test temporary outputs and mock directories
+tests/*.json
+tests/*-mock-*/
+tests/*-regression-*/
+
+# Verification snapshots & temporary files
+budget-*.json
+carbon-*.json
+carbon-offline-tests.txt
+accounting-audit.json
+credits-reactivation-observed.json
+reactivation-*.json
+cloud-final-verification.json
+counttokens-verification.json
+other-clients-*.json
+storage-*.json
+desktop-route-verification.json
+desktop-storage.json
+install-manifest.json
+official-mode-launcher-check.json
+stop-verification.json
+ccswitch-scope-settings.json
+cleanup-*.json
+permanent-cleanup-*.json
+space-before-permanent-cleanup.json
+parameter-*.json
+parameter-offline-tests.txt
+*.bak_direct
+
+# OS / Editor
+.DS_Store
+Thumbs.db

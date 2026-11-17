@@ -1,0 +1,557 @@
+diff --git a/internal/runtime/executor/gemini_vertex_executor.go b/internal/runtime/executor/gemini_vertex_executor.go
+index ff87112..16b3772 100644
+--- a/internal/runtime/executor/gemini_vertex_executor.go
++++ b/internal/runtime/executor/gemini_vertex_executor.go
+@@ -571,6 +571,12 @@ func (e *GeminiVertexExecutor) executeWithServiceAccount(ctx context.Context, au
+ 		data = convertImagenToGeminiResponse(data, baseModel)
+ 	}
+ 
++	if malformedErr := helps.VertexMalformedFunctionCall(data, body); malformedErr != nil {
++		log.WithField("diagnostic", malformedErr.LogDiagnostic()).Warn("vertex malformed function call")
++		helps.RecordAPIResponseError(ctx, e.cfg, malformedErr)
++		reporter.PublishFailureWithDetail(ctx, helps.ParseGeminiUsage(data), malformedErr)
++		return cliproxyexecutor.Response{}, malformedErr
++	}
+ 	if blockMsg, blocked := geminiPromptBlockErrorMessage(data); blocked {
+ 		err = statusErr{code: http.StatusBadGateway, msg: blockMsg}
+ 		helps.RecordAPIResponseError(ctx, e.cfg, err)
+@@ -738,6 +744,12 @@ func (e *GeminiVertexExecutor) executeWithAPIKey(ctx context.Context, auth *clip
+ 		cacheAntigravityReasoningReplayFromResponse(ctx, replayScope, replayRequestPayload, data)
+ 	}
+ 	reporter.ObserveResponseModel(data)
++	if malformedErr := helps.VertexMalformedFunctionCall(data, body); malformedErr != nil {
++		log.WithField("diagnostic", malformedErr.LogDiagnostic()).Warn("vertex malformed function call")
++		helps.RecordAPIResponseError(ctx, e.cfg, malformedErr)
++		reporter.PublishFailureWithDetail(ctx, helps.ParseGeminiUsage(data), malformedErr)
++		return cliproxyexecutor.Response{}, malformedErr
++	}
+ 	if blockMsg, blocked := geminiPromptBlockErrorMessage(data); blocked {
+ 		err = statusErr{code: http.StatusBadGateway, msg: blockMsg}
+ 		helps.RecordAPIResponseError(ctx, e.cfg, err)
+@@ -959,6 +971,25 @@ func (e *GeminiVertexExecutor) executeStreamWithServiceAccount(ctx context.Conte
+ 				sawFinishReason = true
+ 			}
+ 			streamUsage.ObserveGeminiStream(line)
++			if malformedErr := helps.VertexMalformedFunctionCall(rawPayload, body); malformedErr != nil {
++				if helps.CanFinalizeResponseStream(param) {
++					log.WithField("diagnostic", malformedErr.LogDiagnostic()).Warn("vertex malformed function call after complete tool_use; finalizing turn as tool_use")
++					if !emitTranslatedLine(line) {
++						return
++					}
++					continue
++				}
++				log.WithField("diagnostic", malformedErr.LogDiagnostic()).Warn("vertex malformed function call")
++				helps.RecordAPIResponseError(ctx, e.cfg, malformedErr)
++				if !streamUsage.PublishFailure(ctx, reporter, malformedErr) {
++					reporter.PublishFailure(ctx, malformedErr)
++				}
++				select {
++				case out <- cliproxyexecutor.StreamChunk{Err: malformedErr}:
++				case <-ctx.Done():
++				}
++				return
++			}
+ 			if blockMsg, blocked := geminiPromptBlockErrorMessage(rawPayload); blocked {
+ 				blockErr := statusErr{code: http.StatusBadGateway, msg: blockMsg}
+ 				helps.RecordAPIResponseError(ctx, e.cfg, blockErr)
+@@ -1020,7 +1051,7 @@ func (e *GeminiVertexExecutor) executeStreamWithServiceAccount(ctx context.Conte
+ 		if ctx.Err() != nil {
+ 			return
+ 		}
+-		if (responseFormat == sdktranslator.FormatClaude || responseFormat == sdktranslator.FormatOpenAI) && !sawFinishReason {
++		if (responseFormat == sdktranslator.FormatClaude || responseFormat == sdktranslator.FormatOpenAI) && !sawFinishReason && !helps.CanFinalizeResponseStream(param) {
+ 			truncErr := statusErr{code: http.StatusBadGateway, msg: "upstream stream closed before finishReason", streamTruncated: true}
+ 			helps.RecordAPIResponseError(ctx, e.cfg, truncErr)
+ 			if !streamUsage.PublishFailure(ctx, reporter, truncErr) {
+@@ -1247,6 +1278,25 @@ func (e *GeminiVertexExecutor) executeStreamWithAPIKey(ctx context.Context, auth
+ 				sawFinishReason = true
+ 			}
+ 			streamUsage.ObserveGeminiStream(line)
++			if malformedErr := helps.VertexMalformedFunctionCall(rawPayload, body); malformedErr != nil {
++				if helps.CanFinalizeResponseStream(param) {
++					log.WithField("diagnostic", malformedErr.LogDiagnostic()).Warn("vertex malformed function call after complete tool_use; finalizing turn as tool_use")
++					if !emitTranslatedLine(line) {
++						return
++					}
++					continue
++				}
++				log.WithField("diagnostic", malformedErr.LogDiagnostic()).Warn("vertex malformed function call")
++				helps.RecordAPIResponseError(ctx, e.cfg, malformedErr)
++				if !streamUsage.PublishFailure(ctx, reporter, malformedErr) {
++					reporter.PublishFailure(ctx, malformedErr)
++				}
++				select {
++				case out <- cliproxyexecutor.StreamChunk{Err: malformedErr}:
++				case <-ctx.Done():
++				}
++				return
++			}
+ 			if blockMsg, blocked := geminiPromptBlockErrorMessage(rawPayload); blocked {
+ 				blockErr := statusErr{code: http.StatusBadGateway, msg: blockMsg}
+ 				helps.RecordAPIResponseError(ctx, e.cfg, blockErr)
+@@ -1308,7 +1358,7 @@ func (e *GeminiVertexExecutor) executeStreamWithAPIKey(ctx context.Context, auth
+ 		if ctx.Err() != nil {
+ 			return
+ 		}
+-		if (responseFormat == sdktranslator.FormatClaude || responseFormat == sdktranslator.FormatOpenAI) && !sawFinishReason {
++		if (responseFormat == sdktranslator.FormatClaude || responseFormat == sdktranslator.FormatOpenAI) && !sawFinishReason && !helps.CanFinalizeResponseStream(param) {
+ 			truncErr := statusErr{code: http.StatusBadGateway, msg: "upstream stream closed before finishReason", streamTruncated: true}
+ 			helps.RecordAPIResponseError(ctx, e.cfg, truncErr)
+ 			if !streamUsage.PublishFailure(ctx, reporter, truncErr) {
+diff --git a/internal/runtime/executor/gemini_vertex_executor_test.go b/internal/runtime/executor/gemini_vertex_executor_test.go
+index c0157af..ef7f0fd 100644
+--- a/internal/runtime/executor/gemini_vertex_executor_test.go
++++ b/internal/runtime/executor/gemini_vertex_executor_test.go
+@@ -4,10 +4,12 @@ import (
+ 	"bytes"
+ 	"context"
+ 	"encoding/json"
++	"errors"
+ 	"io"
+ 	"net/http"
+ 	"net/http/httptest"
+ 	"strings"
++	"sync/atomic"
+ 	"testing"
+ 
+ 	"github.com/MoeForge/moego/ojson"
+@@ -116,7 +118,7 @@ func TestGeminiVertexApplyPatchExecutorReuse(t *testing.T) {
+ 	assertExecutorPatchStream(t, stream.Chunks)
+ }
+ 
+-func TestGeminiVertexExecutorClaudeMalformedFunctionCallReturnsRetryableError(t *testing.T) {
++func TestGeminiVertexExecutorClaudeMalformedFunctionCallReturnsRequestScopedError(t *testing.T) {
+ 	malformedBody := `{"candidates":[{"content":{"role":"model","parts":[]},"finishReason":"MALFORMED_FUNCTION_CALL"}],"usageMetadata":{"promptTokenCount":120,"candidatesTokenCount":10,"thoughtsTokenCount":313,"totalTokenCount":443},"modelVersion":"gemini-4-argon"}`
+ 	for _, authMode := range []string{"api_key", "service_account"} {
+ 		t.Run(authMode, func(t *testing.T) {
+@@ -178,14 +180,15 @@ func TestGeminiVertexExecutorClaudeMalformedFunctionCallReturnsRetryableError(t
+ 
+ 			_, errExec := exec.Execute(ctx, auth, req, opts)
+ 			if errExec == nil {
+-				t.Fatal("Execute() error = nil, want retryable 502 error for MALFORMED_FUNCTION_CALL")
++				t.Fatal("Execute() error = nil, want request-scoped 502 error for MALFORMED_FUNCTION_CALL")
+ 			}
+ 			status, okStatus := errExec.(interface{ StatusCode() int })
+ 			if !okStatus || status.StatusCode() != http.StatusBadGateway {
+ 				t.Fatalf("Execute() error = %T %v, want status 502", errExec, errExec)
+ 			}
+-			if got := ojson.Get(errExec.Error(), "error.type").String(); got != "api_error" {
+-				t.Fatalf("Execute() error.type = %q, want api_error. Error: %s", got, errExec.Error())
++			var scoped cliproxyexecutor.RequestScopedError
++			if !errors.As(errExec, &scoped) || !scoped.IsRequestScoped() || !strings.Contains(errExec.Error(), "MALFORMED_FUNCTION_CALL") {
++				t.Fatalf("Execute() must preserve the request-scoped malformed failure, got %T %v", errExec, errExec)
+ 			}
+ 			assertMalformedFunctionCallFailedUsage(t, capture.records)
+ 
+@@ -209,8 +212,12 @@ func TestGeminiVertexExecutorClaudeMalformedFunctionCallReturnsRetryableError(t
+ 			if strings.Contains(streamText, `"stop_reason":"refusal"`) {
+ 				t.Fatalf("stream unexpectedly emitted stop_reason refusal:\n%s", streamText)
+ 			}
+-			if !strings.Contains(streamText, "event: error\n") || !strings.Contains(streamText, `"type":"api_error"`) {
+-				t.Fatalf("stream missing retryable api_error event:\n%s", streamText)
++			var streamScoped cliproxyexecutor.RequestScopedError
++			if !errors.As(streamErr, &streamScoped) || !streamScoped.IsRequestScoped() || !strings.Contains(streamErr.Error(), "MALFORMED_FUNCTION_CALL") {
++				t.Fatalf("stream must preserve typed request-scoped failure, got %T %v", streamErr, streamErr)
++			}
++			if strings.Contains(streamText, "event: message_stop") || strings.Contains(streamText, `"stop_reason":"end_turn"`) || strings.Contains(streamText, `"stop_reason":"tool_use"`) {
++				t.Fatalf("malformed stream must not complete successfully: %s", streamText)
+ 			}
+ 			assertMalformedFunctionCallFailedUsage(t, capture.records)
+ 		})
+@@ -221,13 +228,16 @@ func TestGeminiVertexExecutorClaudeMalformedFunctionCallCancelAfterErrorRecordsF
+ 	malformedBody := `{"candidates":[{"content":{"role":"model","parts":[]},"finishReason":"MALFORMED_FUNCTION_CALL"}],"usageMetadata":{"promptTokenCount":120,"candidatesTokenCount":10,"thoughtsTokenCount":313,"totalTokenCount":443},"modelVersion":"gemini-4-argon"}`
+ 	for _, authMode := range []string{"api_key", "service_account"} {
+ 		t.Run(authMode, func(t *testing.T) {
++			var upstreamCalls atomic.Int32
+ 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+ 				if r.URL.Path == "/token" {
+ 					w.Header().Set("Content-Type", "application/json")
+ 					_, _ = io.WriteString(w, `{"access_token":"local-token","token_type":"Bearer","expires_in":3600}`)
+ 					return
+ 				}
++				upstreamCalls.Add(1)
+ 				w.Header().Set("Content-Type", "text/event-stream")
++				_, _ = io.WriteString(w, "data: {\"candidates\":[{\"content\":{\"role\":\"model\",\"parts\":[{\"text\":\"partial fixture\"}]}}]}\n\n")
+ 				_, _ = io.WriteString(w, "data: "+malformedBody+"\n\n")
+ 				if flusher, okFlush := w.(http.Flusher); okFlush {
+ 					flusher.Flush()
+@@ -269,6 +279,7 @@ func TestGeminiVertexExecutorClaudeMalformedFunctionCallCancelAfterErrorRecordsF
+ 			exec := NewGeminiVertexExecutor(&config.Config{})
+ 			manager := cliproxyauth.NewManager(nil, nil, nil)
+ 			manager.RegisterExecutor(exec)
++			manager.SetRetryConfig(2, 0, 2)
+ 			if _, errRegister := manager.Register(ctx, auth); errRegister != nil {
+ 				t.Fatalf("Register() error = %v", errRegister)
+ 			}
+@@ -293,23 +304,163 @@ func TestGeminiVertexExecutorClaudeMalformedFunctionCallCancelAfterErrorRecordsF
+ 			if errStream != nil {
+ 				t.Fatalf("manager.ExecuteStream() error = %v", errStream)
+ 			}
++			var terminalErr error
++			var delivered bytes.Buffer
+ 			for chunk := range streamRes.Chunks {
+-				if strings.Contains(string(chunk.Payload), "event: error\n") {
++				delivered.Write(chunk.Payload)
++				if chunk.Err != nil {
++					terminalErr = chunk.Err
+ 					cancel()
+ 				}
+ 			}
++			var scoped cliproxyexecutor.RequestScopedError
++			if !errors.As(terminalErr, &scoped) || !scoped.IsRequestScoped() {
++				t.Fatalf("expected typed request-scoped error before client cancellation, got %v", terminalErr)
++			}
++			if !strings.Contains(delivered.String(), "partial fixture") || strings.Contains(delivered.String(), "event: message_stop") {
++				t.Fatalf("partial stream must fail without a successful stop: %s", delivered.String())
++			}
++			if got := upstreamCalls.Load(); got != 1 {
++				t.Fatalf("malformed generation replayed: upstream calls=%d, want 1", got)
++			}
+ 			assertMalformedFunctionCallFailedUsage(t, capture.records)
+ 			updated, okAuth := manager.GetByID(auth.ID)
+-			if !okAuth || updated.ModelStates["gemini-4-argon"] == nil || updated.ModelStates["gemini-4-argon"].LastError == nil {
+-				t.Fatalf("expected conductor to record failure on model state after client cancel on error event, got %+v", updated)
++			if !okAuth || updated.Failed != 1 || updated.Success != 0 {
++				t.Fatalf("expected one failed generation and no success after cancellation, got %+v", updated)
+ 			}
+-			if updated.ModelStates["gemini-4-argon"].LastError.HTTPStatus != http.StatusBadGateway {
+-				t.Fatalf("LastError.HTTPStatus = %d, want 502; err=%+v", updated.ModelStates["gemini-4-argon"].LastError.HTTPStatus, updated.ModelStates["gemini-4-argon"].LastError)
++			if updated.Unavailable || !updated.NextRetryAfter.IsZero() || updated.Quota.Exceeded {
++				t.Fatalf("request-scoped failure must not cool or exhaust credentials: %+v", updated)
++			}
++			if state := updated.ModelStates["gemini-4-argon"]; state != nil && (state.Unavailable || !state.NextRetryAfter.IsZero() || state.Quota.Exceeded) {
++				t.Fatalf("request-scoped failure must not cool model: %+v", state)
+ 			}
+ 		})
+ 	}
+ }
+ 
++func TestGeminiVertexExecutorClaudePriorToolCallSurvivesTrailingMalformedOrEOF(t *testing.T) {
++	toolCallChunk := `{"candidates":[{"content":{"role":"model","parts":[{"functionCall":{"name":"Read","args":{"file_path":"a.txt"}}}]}}],"modelVersion":"gemini-4-argon"}`
++	malformedTrailingChunk := `{"candidates":[{"content":{"role":"model","parts":[{"text":"discarded trailing text"}]},"finishReason":"MALFORMED_FUNCTION_CALL"}],"usageMetadata":{"promptTokenCount":120,"candidatesTokenCount":10,"thoughtsTokenCount":50,"totalTokenCount":180},"modelVersion":"gemini-4-argon"}`
++
++	scenarios := []struct {
++		name           string
++		trailingChunks []string
++	}{
++		{
++			name:           "malformed_after_tool",
++			trailingChunks: []string{malformedTrailingChunk},
++		},
++		{
++			name:           "eof_after_tool",
++			trailingChunks: nil,
++		},
++	}
++
++	for _, sc := range scenarios {
++		for _, authMode := range []string{"api_key", "service_account"} {
++			t.Run(sc.name+"/"+authMode, func(t *testing.T) {
++				var upstreamCalls atomic.Int32
++				server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
++					if r.URL.Path == "/token" {
++						w.Header().Set("Content-Type", "application/json")
++						_, _ = io.WriteString(w, `{"access_token":"local-token","token_type":"Bearer","expires_in":3600}`)
++						return
++					}
++					upstreamCalls.Add(1)
++					w.Header().Set("Content-Type", "text/event-stream")
++					_, _ = io.WriteString(w, "data: "+toolCallChunk+"\n\n")
++					for _, trailing := range sc.trailingChunks {
++						_, _ = io.WriteString(w, "data: "+trailing+"\n\n")
++					}
++				}))
++				defer server.Close()
++
++				ctx := context.Background()
++				auth := &cliproxyauth.Auth{ID: t.Name(), Provider: "vertex", Status: cliproxyauth.StatusActive}
++				if authMode == "api_key" {
++					auth.Attributes = map[string]string{"api_key": "test-key", "base_url": server.URL}
++				} else {
++					var serviceAccount map[string]any
++					if errUnmarshal := json.Unmarshal(testVertexServiceAccountJSON(t, server.URL+"/token"), &serviceAccount); errUnmarshal != nil {
++						t.Fatal(errUnmarshal)
++					}
++					auth.Metadata = map[string]any{
++						"project_id":      "proxy-test",
++						"location":        "global",
++						"service_account": serviceAccount,
++					}
++					target, errParse := parseTestURL(t, server.URL)
++					if errParse != nil {
++						t.Fatal(errParse)
++					}
++					transport := http.DefaultTransport.(*http.Transport).Clone()
++					transport.Proxy = nil
++					t.Cleanup(transport.CloseIdleConnections)
++					ctx = context.WithValue(ctx, "cliproxy.roundtripper", issue6258RedirectTransport{target: target, base: transport})
++				}
++
++				exec := NewGeminiVertexExecutor(&config.Config{})
++				manager := cliproxyauth.NewManager(nil, nil, nil)
++				manager.RegisterExecutor(exec)
++				manager.SetRetryConfig(2, 0, 2)
++				if _, errRegister := manager.Register(ctx, auth); errRegister != nil {
++					t.Fatalf("Register() error = %v", errRegister)
++				}
++				registry.GetGlobalRegistry().RegisterClient(auth.ID, auth.Provider, []*registry.ModelInfo{{ID: "gemini-4-argon"}})
++				t.Cleanup(func() {
++					registry.GetGlobalRegistry().UnregisterClient(auth.ID)
++				})
++
++				req := cliproxyexecutor.Request{
++					Model:   "gemini-4-argon",
++					Payload: []byte(`{"model":"gemini-4-argon","max_tokens":1024,"messages":[{"role":"user","content":"hi"}]}`),
++				}
++				opts := cliproxyexecutor.Options{
++					SourceFormat:   sdktranslator.FormatClaude,
++					ResponseFormat: sdktranslator.FormatClaude,
++					Stream:         true,
++				}
++
++				streamRes, errStream := manager.ExecuteStream(ctx, []string{"vertex"}, req, opts)
++				if errStream != nil {
++					t.Fatalf("manager.ExecuteStream() error = %v", errStream)
++				}
++				var terminalErr error
++				var delivered bytes.Buffer
++				for chunk := range streamRes.Chunks {
++					delivered.Write(chunk.Payload)
++					if chunk.Err != nil {
++						terminalErr = chunk.Err
++					}
++				}
++				if terminalErr != nil {
++					t.Fatalf("expected clean tool_use finalization, got chunk error %v; body=%s", terminalErr, delivered.String())
++				}
++				body := delivered.String()
++				if !strings.Contains(body, `"type":"tool_use"`) {
++					t.Fatalf("expected tool_use block in stream, got: %s", body)
++				}
++				if !strings.Contains(body, `"stop_reason":"tool_use"`) {
++					t.Fatalf("expected stop_reason=tool_use in stream, got: %s", body)
++				}
++				if !strings.Contains(body, "event: message_stop") {
++					t.Fatalf("expected message_stop in stream, got: %s", body)
++				}
++				if strings.Contains(body, "event: error") || strings.Contains(body, "discarded trailing text") {
++					t.Fatalf("unexpected error or trailing text in finalized stream: %s", body)
++				}
++				if got := upstreamCalls.Load(); got != 1 {
++					t.Fatalf("upstream calls = %d, want 1", got)
++				}
++				updated, okAuth := manager.GetByID(auth.ID)
++				if !okAuth || updated.Success != 1 || updated.Failed != 0 {
++					t.Fatalf("expected clean success record, got %+v", updated)
++				}
++			})
++		}
++	}
++}
++
+ // TestVertexAPIKeyModelsURL pinpoints the exact URL construction rule for
+ // API-key mode: the configured base URL is honored as a full resource prefix
+ // when it already contains "/publishers/", otherwise "/v1/publishers/google/models"
+diff --git a/internal/runtime/executor/helps/vertex_malformed.go b/internal/runtime/executor/helps/vertex_malformed.go
+new file mode 100644
+index 0000000..bab8734
+--- /dev/null
++++ b/internal/runtime/executor/helps/vertex_malformed.go
+@@ -0,0 +1,34 @@
++package helps
++
++import (
++	"crypto/sha256"
++	"fmt"
++	"net/http"
++
++	"github.com/MoeForge/moego/ojson"
++)
++
++// VertexMalformedError is a failed generation, not a failed credential.
++// It must neither be replayed across credentials nor committed as a successful turn.
++type VertexMalformedError struct{ diagnostic string }
++
++func (e *VertexMalformedError) Error() string {
++	return "Gemini response finished with MALFORMED_FUNCTION_CALL"
++}
++func (e *VertexMalformedError) StatusCode() int       { return http.StatusBadGateway }
++func (e *VertexMalformedError) IsRequestScoped() bool { return true }
++func (e *VertexMalformedError) LogDiagnostic() string { return e.diagnostic }
++
++// VertexMalformedFunctionCall preserves only counts and SHA-256 digests in diagnostics.
++// Raw finishMessage, prompts, tool names, schemas, arguments and credentials are never logged.
++func VertexMalformedFunctionCall(response, request []byte) *VertexMalformedError {
++	for _, c := range ojson.GetBytesNoCopy(response, "candidates").Array() {
++		if c.Get("finishReason").String() != "MALFORMED_FUNCTION_CALL" {
++			continue
++		}
++		message := c.Get("finishMessage").String()
++		tools := ojson.GetBytesNoCopy(request, "tools").Raw
++		return &VertexMalformedError{diagnostic: fmt.Sprintf("finish_reason=MALFORMED_FUNCTION_CALL finish_message_bytes=%d finish_message_sha256=%x tools_sha256=%x response_parts=%d", len(message), sha256.Sum256([]byte(message)), sha256.Sum256([]byte(tools)), len(c.Get("content.parts").Array()))}
++	}
++	return nil
++}
+diff --git a/internal/runtime/executor/helps/vertex_malformed_test.go b/internal/runtime/executor/helps/vertex_malformed_test.go
+new file mode 100644
+index 0000000..2d7e0d9
+--- /dev/null
++++ b/internal/runtime/executor/helps/vertex_malformed_test.go
+@@ -0,0 +1,26 @@
++package helps
++
++import (
++	"strings"
++	"testing"
++)
++
++func TestVertexMalformedRequestScoped(t *testing.T) {
++	for _, raw := range []string{
++		"{\"candidates\":[{\"finishReason\":\"MALFORMED_FUNCTION_CALL\",\"finishMessage\":\"SECRET_DATA\"}]}",
++		"{\"candidates\":[{\"content\":{\"parts\":[{\"functionCall\":{\"name\":\"SECRET_TOOL\",\"args\":{}}}]},\"finishReason\":\"MALFORMED_FUNCTION_CALL\"}]}",
++	} {
++		e := VertexMalformedFunctionCall([]byte(raw), []byte("{\"tools\":[{\"secret\":\"SECRET_DATA\"}]}"))
++		if e == nil || !e.IsRequestScoped() || e.StatusCode() != 502 {
++			t.Fatalf("missing request scoped failure: %v", e)
++		}
++		if strings.Contains(e.Error()+e.LogDiagnostic(), "SECRET") {
++			t.Fatal("diagnostic leaks content")
++		}
++	}
++	for _, raw := range []string{"{}", "{\"candidates\":[{\"finishReason\":\"STOP\"}]}", "{\"error\":{\"code\":429}}", "{\"error\":{\"code\":502}}"} {
++		if VertexMalformedFunctionCall([]byte(raw), nil) != nil {
++			t.Fatal("unrelated response reclassified")
++		}
++	}
++}
+diff --git a/internal/translator/gemini/claude/gemini_claude_response.go b/internal/translator/gemini/claude/gemini_claude_response.go
+index eecb940..f32882a 100644
+--- a/internal/translator/gemini/claude/gemini_claude_response.go
++++ b/internal/translator/gemini/claude/gemini_claude_response.go
+@@ -48,6 +48,13 @@ func isGeminiMalformedFunctionCall(finishReason string, sawToolCall bool) bool {
+ 	return finishReason == "MALFORMED_FUNCTION_CALL" && !sawToolCall
+ }
+ 
++// CanFinalizeResponseStream reports whether the stream has already emitted at least one
++// complete tool_use block and has no incomplete tool call in flight, allowing a trailing
++// MALFORMED_FUNCTION_CALL or premature upstream EOF to finalize cleanly as tool_use.
++func (p *Params) CanFinalizeResponseStream() bool {
++	return p != nil && p.SawToolCall && p.ActiveToolCall == nil && !p.HasIncompleteToolCall
++}
++
+ func resolveGeminiClaudeStopReason(finishReason string, sawToolCall bool) string {
+ 	if sawToolCall {
+ 		return "tool_use"
+@@ -223,8 +230,10 @@ func ConvertGeminiResponseToClaude(_ context.Context, _ string, originalRequestR
+ 
+ 	// Process the response parts array from the backend client
+ 	// Each part can contain text content, thinking content, or function calls
++	finishReasonInChunk := ojson.GetBytesNoCopy(rawJSON, "candidates.0.finishReason").String()
++	skipMalformedParts := finishReasonInChunk == "MALFORMED_FUNCTION_CALL" && p.CanFinalizeResponseStream()
+ 	partsResult := ojson.GetBytesNoCopy(rawJSON, "candidates.0.content.parts")
+-	if partsResult.IsArray() {
++	if partsResult.IsArray() && !skipMalformedParts {
+ 		partResults := partsResult.Array()
+ 		for i := 0; i < len(partResults); i++ {
+ 			partResult := partResults[i]
+diff --git a/sdk/api/handlers/handlers_stream.go b/sdk/api/handlers/handlers_stream.go
+index e04fe3b..d499623 100644
+--- a/sdk/api/handlers/handlers_stream.go
++++ b/sdk/api/handlers/handlers_stream.go
+@@ -576,20 +576,6 @@ func (h *BaseAPIHandler) executeStreamWithAuthManagerFormats(ctx context.Context
+ 		}
+ 	}
+ 
+-	bootstrapEligible := func(err error) bool {
+-		status := statusFromError(err)
+-		if status == 0 {
+-			return true
+-		}
+-		switch status {
+-		case http.StatusUnauthorized, http.StatusForbidden, http.StatusPaymentRequired,
+-			http.StatusRequestTimeout, http.StatusTooManyRequests:
+-			return true
+-		default:
+-			return status >= http.StatusInternalServerError
+-		}
+-	}
+-
+ 	maxBootstrapRetries := StreamingBootstrapRetries(h.CurrentConfig())
+ 	if h.AuthManager.HomeEnabled() {
+ 		maxBootstrapRetries = 0
+@@ -599,7 +585,7 @@ func (h *BaseAPIHandler) executeStreamWithAuthManagerFormats(ctx context.Context
+ 		if streamCanceledBeforeRead || bootstrapErr != nil || bootstrapStreamErr == nil {
+ 			break
+ 		}
+-		if bootstrapRetries >= maxBootstrapRetries || !bootstrapEligible(bootstrapStreamErr) {
++		if bootstrapRetries >= maxBootstrapRetries || !streamBootstrapEligible(bootstrapStreamErr) {
+ 			bootstrapErr = executionErrorMessage(bootstrapStreamErr)
+ 			break
+ 		}
+@@ -919,3 +905,23 @@ func streamDeliveryCompletion(ctx context.Context, outcome pluginapi.RequestComp
+ 	}
+ 	return pluginapi.RequestCompletionFailed, executionErrorMessage(deliveryErr).StatusCode, deliveryErr
+ }
++
++// streamBootstrapEligible preserves terminal request failures even when a plugin
++// or validator suppressed earlier chunks before the first downstream payload.
++func streamBootstrapEligible(err error) bool {
++	var scoped coreexecutor.RequestScopedError
++	if errors.As(err, &scoped) && scoped != nil && scoped.IsRequestScoped() {
++		return false
++	}
++	status := statusFromError(err)
++	if status == 0 {
++		return true
++	}
++	switch status {
++	case http.StatusUnauthorized, http.StatusForbidden, http.StatusPaymentRequired,
++		http.StatusRequestTimeout, http.StatusTooManyRequests:
++		return true
++	default:
++		return status >= http.StatusInternalServerError
++	}
++}
+diff --git a/sdk/api/handlers/handlers_stream_request_scoped_test.go b/sdk/api/handlers/handlers_stream_request_scoped_test.go
+new file mode 100644
+index 0000000..c50991a
+--- /dev/null
++++ b/sdk/api/handlers/handlers_stream_request_scoped_test.go
+@@ -0,0 +1,37 @@
++package handlers
++
++import (
++	"fmt"
++	"testing"
++)
++
++type bootstrapRequestScopedFixture struct {
++	status int
++	scoped bool
++}
++
++func (e bootstrapRequestScopedFixture) Error() string         { return "offline fixture" }
++func (e bootstrapRequestScopedFixture) StatusCode() int       { return e.status }
++func (e bootstrapRequestScopedFixture) IsRequestScoped() bool { return e.scoped }
++
++func TestStreamBootstrapRejectsRequestScopedError(t *testing.T) {
++	failure := bootstrapRequestScopedFixture{status: 502, scoped: true}
++	for _, err := range []error{failure, fmt.Errorf("wrapped: %w", failure)} {
++		if streamBootstrapEligible(err) {
++			t.Fatal("request-scoped error must not replay an accepted generation")
++		}
++	}
++}
++
++func TestStreamBootstrapPreservesOtherRetryStatuses(t *testing.T) {
++	for _, status := range []int{0, 401, 402, 403, 408, 429, 500, 502, 503, 504} {
++		if !streamBootstrapEligible(bootstrapRequestScopedFixture{status: status}) {
++			t.Fatalf("existing retry eligibility changed for status %d", status)
++		}
++	}
++	for _, status := range []int{400, 404, 422} {
++		if streamBootstrapEligible(bootstrapRequestScopedFixture{status: status}) {
++			t.Fatalf("unexpected retry for status %d", status)
++		}
++	}
++}

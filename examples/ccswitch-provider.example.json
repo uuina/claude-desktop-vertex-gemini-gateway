@@ -1,0 +1,36 @@
+{
+  "app_type": "claude-desktop",
+  "name": "GCP Vertex Gemini 4",
+  "settings_config": {
+    "env": {
+      "ANTHROPIC_BASE_URL": "http://127.0.0.1:18432",
+      "ANTHROPIC_AUTH_TOKEN": "CHANGE_ME_LOCAL_GATEWAY_KEY"
+    }
+  },
+  "meta": {
+    "apiFormat": "anthropic",
+    "claudeDesktopMode": "proxy",
+    "claudeDesktopModelRoutes": {
+      "claude-sonnet-5": {
+        "model": "gemini-4-argon",
+        "labelOverride": "Gemini 4 Argon · GCP"
+      },
+      "claude-opus-5": {
+        "model": "carbon-us/gemini-4-carbon",
+        "labelOverride": "Gemini 4 Carbon · GCP"
+      },
+      "claude-fable-5": {
+        "model": "gemini-4-argon",
+        "labelOverride": "Gemini 4 Argon · GCP"
+      },
+      "claude-haiku-4-5": {
+        "model": "gemini-4-hydrogen",
+        "labelOverride": "Gemini 4 Hydrogen · GCP"
+      },
+      "claude-haiku-5-5": {
+        "model": "gemini-4-hydrogen",
+        "labelOverride": "Gemini 4 Hydrogen · GCP"
+      }
+    }
+  }
+}
